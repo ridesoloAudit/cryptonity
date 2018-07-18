@@ -6,7 +6,6 @@ import "openzeppelin-solidity/contracts/crowdsale/validation/TimedCrowdsale.sol"
 import "openzeppelin-solidity/contracts/crowdsale/distribution/RefundableCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/distribution/PostDeliveryCrowdsale.sol";
 import "openzeppelin-solidity/contracts/lifecycle/Pausable.sol";
-import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "../token/CryptonityToken.sol";
 import "./FiatContract.sol";
 
@@ -17,8 +16,6 @@ import "./FiatContract.sol";
  */
 // solium-disable-next-line max-len
 contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrowdsale, RefundableCrowdsale, PostDeliveryCrowdsale, Pausable {
-
-  using SafeMath for uint256;
 
   // public supply of token
   uint256 public publicSupply = 60000000 * 1 ether;
@@ -54,11 +51,21 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
 
   uint256 deliveryTime;
 
-  FiatContract public price;
+  address public wallet;
+  uint256 public rate;
+  ERC20  public token;
 
-  event NewPayment(address sender, uint256 amount);
-  event EventCancelation(uint256 id);
-  event Withdrawal(address to, uint256 amount);
+  // token prices per phases
+  uint256 public phase1TokenPrice;
+  uint256 public phase2TokenPrice;
+  uint256 public phase3TokenPrice;
+
+  // token price per usd
+  uint256 public tokenUSDPrice;
+  // token price per wei
+  uint256 public tokenWEIPrice;
+  // one XNY token per ETH wei
+  uint256 public oneTokenInWEI;
 
   /**
    * @param _openingTime Crowdsale opening time
@@ -85,10 +92,24 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
     TimedCrowdsale(_openingTime, _closingTime)
     RefundableCrowdsale(_softCap)
   {
+    require(_rate > 0);
+    require(_wallet != address(0));
+    require(_token != address(0));
+    require(_fiatContract != address(0));
     require(_softCap <= _hardCap);
-    price = FiatContract(_fiatContract);
+
+    tokenWEIPrice = FiatContract(_fiatContract);
+
+    rate = _rate;
+    token = _token;
+    wallet = _wallet;
     // token delivery starts 15 days after the crowdsale ends
     deliveryTime = _closingTime.add(60*60*24*15);
+  }
+
+  modifier onlyOwner() {
+    require(msg.sender == owner);
+    _;
   }
 
   /**
@@ -109,6 +130,33 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
   }
 
   /**
+   * @dev Returns current token price depending on the current ICO phase
+   */
+  function getCurrentTokenPrice() public view returns (uint256) {
+    require(now >= openingTime);
+    require(now <= closingTime);
+
+    if (now < phase2StartTime) {
+      return phase1TokenPrice;
+    } else if (now < phase3StartTime) {
+      return phase2TokenPrice;
+    } else (now < closingTime) {
+      return phase3TokenPrice;
+    }
+
+  }
+
+  /**
+  * @dev Calculates and sets token price per ETH wei
+  * @param _ETHPrice ether token price in USD
+  * @param _tokenPriceByPhase XNY token price in USD per phase
+  */
+  function setTokenPricePerWei(uint256 _ETHPrice, uint256 _tokenPriceByPhase) internal onlyOwner {
+    oneTokenInWei = (1 ether).mul(tokenPriceByPhase).div(etherPrice).div(100);
+    // emit event(msg.sender);
+  }
+
+  /**
    * @dev Validation of an incoming purchase. Allowas purchases only when crowdsale is not paused.
    * @param _beneficiary Address performing the token purchase
    * @param _weiAmount Value in wei involved in the purchase
@@ -118,14 +166,14 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
   }
 
   /**
-   * @dev The way in which ether is converted to tokens.
-   * Add bonuses to tokens.
-   * @param _weiAmount Value in wei to be converted into tokens
-   * @return Number of tokens that can be purchased with the specified _weiAmount
+   * @dev Executed when a purchase has been validated and is ready to be executed. Not necessarily emits/sends tokens.
+   * It computes the bonus.
+   * @param _beneficiary Address receiving the tokens
+   * @param _tokenAmount Number of tokens to be purchased
    */
-  function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256)
-  {
-    uint256 totalTokens = _weiAmount.mul(rate);
+  function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
+
+    uint256 totalTokens = _tokenAmount;
     uint256 bonusPercent = getCurrentBonus();
 
     if (bonusPercent > 0) {
@@ -133,17 +181,7 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
       totalTokens = totalTokens.add(bonusTokens);
     }
 
-    return totalTokens;
-  }
-
-  /**
-   * @dev Executed when a purchase has been validated and is ready to be executed. Not necessarily emits/sends tokens.
-   * It computes the bonus.
-   * @param _beneficiary Address receiving the tokens
-   * @param _tokenAmount Number of tokens to be purchased
-   */
-  function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
-    super._processPurchase(_beneficiary, _tokenAmount);
+    super._processPurchase(_beneficiary, totalTokens);
   }
 
   /**
@@ -154,29 +192,6 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
     // solium-disable-next-line security/no-block-members
     require(block.timestamp > deliveryTime);
     super.withdrawTokens();
-  }
-
-  // returns $1.00 USD in ETH wei.
-  function OneETHUSD() view returns (uint256) {
-    // returns $0.01 ETH wei
-    uint256 ethCent = price.USD(0);
-    // $0.01 * 100 = $1.00
-    return ethCent * 100;
-  }
-
-  // returns 1 XNY in ETH wei.
-  function OneXNYETH() view returns (uint256) {
-    // returns $0.01 XNY wei
-    uint256 xnyCent = price.ETH(0);
-    // $0.01 * 100 = $1.00
-    return xnyCent * 100;
-  }
-
-  // returns 1 ETH wei in USD.
-  function OneWEIUSD() view returns (uint256) {
-    // returns 1 wei usd cent
-    uint256 weiCent = OneETHUSD().sub(OneXNYETH());
-    return weiCent * 100;
   }
 
 }

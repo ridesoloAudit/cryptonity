@@ -11,7 +11,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "scripts/test.sh",
+    "test": "truffle test --compile-all",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:sol": "solium -d .",
@@ -28,9 +28,6 @@
     "truffle-hdwallet-provider": "0.0.5"
   },
   "devDependencies": {
-    "babel-polyfill": "^6.26.0",
-    "babel-preset-env": "^1.7.0",
-    "babel-register": "^6.26.0",
     "chai": "^4.1.2",
     "chai-as-promised": "^7.1.1",
     "chai-bignumber": "^2.0.2",
