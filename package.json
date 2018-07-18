@@ -1,0 +1,41 @@
+{
+  "name": "cryptonity",
+  "private": true,
+  "version": "0.1.0",
+  "description": "",
+  "main": "truffle.js",
+  "engines": {
+    "node": ">=9.5.0"
+  },
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "scripts/test.sh",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:sol": "solium -d .",
+    "lint:sol:fix": "solium -d . --fix",
+    "lint:all": "npm run lint && npm run lint:sol",
+    "lint:all:fix": "npm run lint:fix && npm run lint:sol:fix",
+    "compile": "node_modules/.bin/truffle compile --all",
+    "migrate:local": "node_modules/.bin/truffle migrate --network development",
+    "migrate:testnet": "node_modules/.bin/truffle migrate --network rinkeby"
+  },
+  "dependencies": {
+    "dotenv": "^6.0.0",
+    "openzeppelin-solidity": "1.10.0",
+    "truffle-hdwallet-provider": "0.0.5"
+  },
+  "devDependencies": {
+    "babel-polyfill": "^6.26.0",
+    "babel-preset-env": "^1.7.0",
+    "babel-register": "^6.26.0",
+    "chai": "^4.1.2",
+    "chai-as-promised": "^7.1.1",
+    "chai-bignumber": "^2.0.2",
+    "ganache-cli": "^6.1.5",
+    "solium": "^1.1.7",
+    "truffle": "^4.1.13"
+  }
+}
