@@ -5,7 +5,9 @@ import "openzeppelin-solidity/contracts/crowdsale/validation/WhitelistedCrowdsal
 import "openzeppelin-solidity/contracts/crowdsale/validation/TimedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/distribution/RefundableCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/distribution/PostDeliveryCrowdsale.sol";
+import "openzeppelin-solidity/contracts/crowdsale/emission/MintedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/lifecycle/Pausable.sol";
+import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "../token/CryptonityToken.sol";
 import "./FiatContract.sol";
 
@@ -15,8 +17,10 @@ import "./FiatContract.sol";
  * @dev CryptonityCrowdsale
  */
 // solium-disable-next-line max-len
-contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrowdsale, RefundableCrowdsale, PostDeliveryCrowdsale, Pausable {
-
+contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrowdsale, RefundableCrowdsale, PostDeliveryCrowdsale, Pausable, MintedCrowdsale {
+  using SafeMath for uint256;
+  // customize the rate for each whitelisted buyer
+  mapping (address => uint256) public buyerRate;
   // public supply of token
   uint256 public publicSupply = 60000000 * 1 ether;
   // bounty supply of token
@@ -52,7 +56,10 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
   uint256 deliveryTime;
 
   address public wallet;
-  uint256 public rate;
+  // initial rate at which tokens are offered
+  uint256 public initialRate;
+  // end rate at which tokens are offered
+  uint256 public currentRate;
   ERC20  public token;
 
   // token prices per phases
@@ -62,10 +69,16 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
 
   // token price per usd
   uint256 public tokenUSDPrice;
-  // token price per wei
-  uint256 public tokenWEIPrice;
   // one XNY token per ETH wei
   uint256 public oneTokenInWEI;
+
+  address public fiatContract;
+
+  event TokenPricePerWeiChange(address indexed wallet);
+  event InitialRateChange(uint256 rate);
+  event PreferentialRateChange(address indexed buyer, uint256 rate);
+  event WalletChange(address wallet);
+  event ForwardFunds();
 
   /**
    * @param _openingTime Crowdsale opening time
@@ -98,7 +111,7 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
     require(_fiatContract != address(0));
     require(_softCap <= _hardCap);
 
-    tokenWEIPrice = FiatContract(_fiatContract);
+    fiatContract = FiatContract(_fiatContract);
 
     rate = _rate;
     token = _token;
@@ -140,10 +153,77 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
       return phase1TokenPrice;
     } else if (now < phase3StartTime) {
       return phase2TokenPrice;
-    } else (now < closingTime) {
+    } else if (now < closingTime) {
       return phase3TokenPrice;
     }
 
+  }
+
+  /**
+  * @dev Sets initial rate for contract
+  * @param rate Rate for initialisation crowdsale
+  */
+
+  function setInitialRate(uint256 rate) internal onlyOwner {
+    require(rate != 0);
+
+    initialRate = rate;
+
+    emit InitialRateChange(rate);
+  }
+
+  /**
+  * @dev Sets buyer rate for contract owner
+  * @param buyer Address for setting rate
+  * @param rate Number for setting to caller
+  */
+  function setBuyerRate(address buyer, uint256 rate) internal onlyOwner {
+    require(rate != 0);
+
+    buyerRate[buyer] = rate;
+
+    emit PreferentialRateChange(buyer, rate);
+  }
+
+  /**
+  * @dev Gets current rate from Fiat Contract
+  */
+  function getRate() internal returns(uint256) { 
+
+  }
+
+  /**
+  * @dev Low level token purchase function
+  * @param beneficiary Address which gets the tokens when they are paid
+  */
+  function buyTokens(address beneficiary) payable {
+    require(beneficiary != address(0));
+
+    uint256 weiAmount = msg.value;
+
+    uint256 updatedWeiRaised = weiRaised.add(weiAmount);
+
+    uint256 rate = getRate();
+    // calculate token amount to be created
+    uint256 tokens = weiAmount.mul(rate);
+
+    // update state
+    weiRaised = updatedWeiRaised;
+
+    // token.mint(beneficiary, tokens);
+    emit TokenPurchase(msg.sender, beneficiary, weiAmount, tokens);
+
+    emit ForwardFunds();
+  }
+
+  /**
+  * @dev Sets new address to wallet
+  * @param _wallet New address for changing to contract
+  */
+  function setWallet(address _wallet) onlyOwner public {
+    require(_wallet != address(0));
+    wallet = _wallet;
+    emit WalletChange(wallet);
   }
 
   /**
@@ -152,8 +232,9 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
   * @param _tokenPriceByPhase XNY token price in USD per phase
   */
   function setTokenPricePerWei(uint256 _ETHPrice, uint256 _tokenPriceByPhase) internal onlyOwner {
-    oneTokenInWei = (1 ether).mul(tokenPriceByPhase).div(etherPrice).div(100);
+    oneTokenInWEI = uint256((1 ether)).mul(_tokenPriceByPhase).div(_ETHPrice).div(100);
     // emit event(msg.sender);
+    emit TokenPricePerWeiChange(msg.sender);
   }
 
   /**
