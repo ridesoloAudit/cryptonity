@@ -1,240 +1,150 @@
 pragma solidity ^0.4.23;
 
-import "openzeppelin-solidity/contracts/crowdsale/validation/CappedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/validation/WhitelistedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/validation/TimedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/distribution/RefundableCrowdsale.sol";
 import "openzeppelin-solidity/contracts/crowdsale/distribution/PostDeliveryCrowdsale.sol";
-import "openzeppelin-solidity/contracts/crowdsale/emission/MintedCrowdsale.sol";
 import "openzeppelin-solidity/contracts/lifecycle/Pausable.sol";
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "../token/CryptonityToken.sol";
-import "./FiatContract.sol";
-
+import "./FiatContractInterface.sol";
+import "./BurnableTokenInterface.sol";
 
 /**
  * @title CryptonityCrowdsale
  * @dev CryptonityCrowdsale
  */
 // solium-disable-next-line max-len
-contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrowdsale, RefundableCrowdsale, PostDeliveryCrowdsale, Pausable, MintedCrowdsale {
+contract CryptonityCrowdsale is TimedCrowdsale, WhitelistedCrowdsale, RefundableCrowdsale, PostDeliveryCrowdsale, Pausable {
   using SafeMath for uint256;
-  // customize the rate for each whitelisted buyer
-  mapping (address => uint256) public buyerRate;
+
   // public supply of token
   uint256 public publicSupply = 60000000 * 1 ether;
-  // bounty supply of token
-  uint256 public bountySupply = 10000000 * 1 ether;
-  // team supply of the token
-  uint256 public teamSupply = 20000000 * 1 ether;
-  // advisors supply of the token
-  uint256 public advisorsSupply = 3000000 * 1 ether;
-  // team supply of the token
-  uint256 public insuranceSupply = 7000000 * 1 ether;
+  // remaining public supply of token for each phase
+  uint256[3] public remainingPublicSupplyPerPhase = [15000000 * 1 ether, 26000000 * 1 ether, 19000000 * 1 ether];
 
-  // remaining public supply of token
-  uint256 public remainingPublicSupply = publicSupply;
-  // remaining bounty supply of token
-  uint256 public remainingBountySupply = bountySupply;
-  // remaining team supply of token
-  uint256 public remainingTeamSupply = teamSupply;
-  // remaining advisors supply of token
-  uint256 public remainingAdvisorsSupply = advisorsSupply;
-  // remaining insurance supply of token
-  uint256 public remainingInsuranceSupply = insuranceSupply;
-
-  // phases start time in Unix epoch timestamp
-  uint256 constant public phase1StartTime = 1541073600; // 2018-11-01 12:00 GMT+0
-  uint256 constant public phase2StartTime = 1543665600; // 2018-12-01 12:00 GMT+0
-  uint256 constant public phase3StartTime = 1544875200;  // 2018-12-15 12:00 GMT+0
-
-  // phases bonuses in percentage
-  uint256 constant public phase1Bonus = 50;
-  uint256 constant public phase2Bonus = 30;
-  uint256 constant public phase3Bonus = 15;
+  uint256[3] public phasesStartTime;
+  uint256[3] public phasesTokenPrices = [23, 34, 58]; // price in $ cents
+  uint256[3] public phasesBonuses = [50, 30, 15]; // bonuses in percentage
 
   uint256 deliveryTime;
 
-  address public wallet;
-  // initial rate at which tokens are offered
-  uint256 public initialRate;
-  // end rate at which tokens are offered
-  uint256 public currentRate;
-  ERC20  public token;
-
-  // token prices per phases
-  uint256 public phase1TokenPrice;
-  uint256 public phase2TokenPrice;
-  uint256 public phase3TokenPrice;
-
-  // token price per usd
-  uint256 public tokenUSDPrice;
-  // one XNY token per ETH wei
-  uint256 public oneTokenInWEI;
-
-  address public fiatContract;
-
-  event TokenPricePerWeiChange(address indexed wallet);
-  event InitialRateChange(uint256 rate);
-  event PreferentialRateChange(address indexed buyer, uint256 rate);
-  event WalletChange(address wallet);
-  event ForwardFunds();
+  // Fiat Contract
+  FiatContractInterface public price;
+  // 0,01$ to wei
+  uint256 public ethCent;
+  // Amount of USD raised
+  uint256 public USDRaised;
+  // A limit for total contributions
+  uint256 public cap;
 
   /**
    * @param _openingTime Crowdsale opening time
    * @param _closingTime Crowdsale closing time
+   * @param _secondPhaseStartTime Crowdsale second phase start time
+   * @param _thirdPhaseStartTime Crowdsale third phase start time
    * @param _rate Number of token units a buyer gets per wei
    * @param _wallet Address where collected funds will be forwarded to
    * @param _token Address of the token being sold
-   * @param _softCap Funding goal
-   * @param _hardCap Max amount of wei to be contributed
+   * @param _softCapInUSD Funding goal
+   * @param _hardCapInUSD Max amount of wei to be contributed
    */
   constructor(
     uint256 _openingTime,
     uint256 _closingTime,
+    uint256 _secondPhaseStartTime,
+    uint256 _thirdPhaseStartTime,
     uint256 _rate,
     address _wallet,
     ERC20 _token,
-    uint256 _softCap,
-    uint256 _hardCap,
+    uint256 _softCapInUSD,
+    uint256 _hardCapInUSD,
     address _fiatContract
   )
     public
     Crowdsale(_rate, _wallet, _token)
-    CappedCrowdsale(_hardCap)
     TimedCrowdsale(_openingTime, _closingTime)
-    RefundableCrowdsale(_softCap)
+    RefundableCrowdsale(_softCapInUSD)
   {
-    require(_rate > 0);
-    require(_wallet != address(0));
-    require(_token != address(0));
-    require(_fiatContract != address(0));
-    require(_softCap <= _hardCap);
-
-    fiatContract = FiatContract(_fiatContract);
-
-    rate = _rate;
-    token = _token;
-    wallet = _wallet;
+    require(_hardCapInUSD > 0);
+    require(_softCapInUSD <= _hardCapInUSD);
+    require(_secondPhaseStartTime >= _openingTime);
+    require(_thirdPhaseStartTime >= _secondPhaseStartTime);
+    require(_closingTime >= _thirdPhaseStartTime);
+    cap = _hardCapInUSD;
+    // fiat contract for converting USD => ETH
+    price = FiatContractInterface(_fiatContract);
     // token delivery starts 15 days after the crowdsale ends
-    deliveryTime = _closingTime.add(60*60*24*15);
+    deliveryTime = _closingTime.add(15 days);
+    phasesStartTime = [_openingTime, _secondPhaseStartTime, _thirdPhaseStartTime];
   }
 
-  modifier onlyOwner() {
-    require(msg.sender == owner);
-    _;
+  /**
+  * @dev Set fiat contract
+  */
+  function setFiatContract(address _newFiatContract) public onlyOwner {
+    price = FiatContractInterface(_newFiatContract);
+  }
+
+ /**
+  * @dev Get phase number depending on the current time
+  */
+  function getPhaseNumber() internal view onlyWhileOpen returns (uint256) {
+    if (now < phasesStartTime[1]) {
+      return 0;
+    } else if (now < phasesStartTime[2]) {
+      return 1;
+    } else {
+      return 2;
+    }
+  }
+
+  /**
+  * @dev Returns the current token price in $ cents depending on the current time
+  */
+  function getCurrentTokenPriceInCents() public view returns (uint256) {
+    return phasesTokenPrices[getPhaseNumber()];
   }
 
   /**
   * @dev Returns the token sale bonus percentage depending on the current time
   */
-  function getCurrentBonus() public view returns (uint256) {
-    require(now >= openingTime);
-
-    if (now < phase2StartTime) {
-      return phase1Bonus;
-    } else if (now < phase3StartTime) {
-      return phase2Bonus;
-    } else if (now < closingTime) {
-      return phase3Bonus;
-    } else {
-      return 0;
-    }
+  function getCurrentBonusPercentage() public view returns (uint256) {
+    return phasesBonuses[getPhaseNumber()];
   }
 
   /**
-   * @dev Returns current token price depending on the current ICO phase
+  * @dev Returns the current rate depending on the current time
+  */
+  function _calculateCurrentRate() internal view returns (uint256) {
+    // returns $0.01 ETH wei
+    ethCent = price.USD(0);
+    return getCurrentTokenPriceInCents().mul(1 ether).div(ethCent);
+  }
+
+  /**
+  * @dev Set the current rate
+  * @param _newRate New rate
+  */
+  function _setCurrentRate(uint256 _newRate) internal {
+    rate = _newRate;
+  }
+
+  /**
+   * @dev Checks whether the cap has been reached.
+   * @return Whether the cap was reached
    */
-  function getCurrentTokenPrice() public view returns (uint256) {
-    require(now >= openingTime);
-    require(now <= closingTime);
-
-    if (now < phase2StartTime) {
-      return phase1TokenPrice;
-    } else if (now < phase3StartTime) {
-      return phase2TokenPrice;
-    } else if (now < closingTime) {
-      return phase3TokenPrice;
-    }
-
+  function capReached() public view returns (bool) {
+    return USDRaised >= cap;
   }
 
-  /**
-  * @dev Sets initial rate for contract
-  * @param rate Rate for initialisation crowdsale
-  */
-
-  function setInitialRate(uint256 rate) internal onlyOwner {
-    require(rate != 0);
-
-    initialRate = rate;
-
-    emit InitialRateChange(rate);
-  }
 
   /**
-  * @dev Sets buyer rate for contract owner
-  * @param buyer Address for setting rate
-  * @param rate Number for setting to caller
-  */
-  function setBuyerRate(address buyer, uint256 rate) internal onlyOwner {
-    require(rate != 0);
-
-    buyerRate[buyer] = rate;
-
-    emit PreferentialRateChange(buyer, rate);
-  }
-
-  /**
-  * @dev Gets current rate from Fiat Contract
-  */
-  function getRate() internal returns(uint256) { 
-
-  }
-
-  /**
-  * @dev Low level token purchase function
-  * @param beneficiary Address which gets the tokens when they are paid
-  */
-  function buyTokens(address beneficiary) payable {
-    require(beneficiary != address(0));
-
-    uint256 weiAmount = msg.value;
-
-    uint256 updatedWeiRaised = weiRaised.add(weiAmount);
-
-    uint256 rate = getRate();
-    // calculate token amount to be created
-    uint256 tokens = weiAmount.mul(rate);
-
-    // update state
-    weiRaised = updatedWeiRaised;
-
-    // token.mint(beneficiary, tokens);
-    emit TokenPurchase(msg.sender, beneficiary, weiAmount, tokens);
-
-    emit ForwardFunds();
-  }
-
-  /**
-  * @dev Sets new address to wallet
-  * @param _wallet New address for changing to contract
-  */
-  function setWallet(address _wallet) onlyOwner public {
-    require(_wallet != address(0));
-    wallet = _wallet;
-    emit WalletChange(wallet);
-  }
-
-  /**
-  * @dev Calculates and sets token price per ETH wei
-  * @param _ETHPrice ether token price in USD
-  * @param _tokenPriceByPhase XNY token price in USD per phase
-  */
-  function setTokenPricePerWei(uint256 _ETHPrice, uint256 _tokenPriceByPhase) internal onlyOwner {
-    oneTokenInWEI = uint256((1 ether)).mul(_tokenPriceByPhase).div(_ETHPrice).div(100);
-    // emit event(msg.sender);
-    emit TokenPricePerWeiChange(msg.sender);
+   * @dev Checks whether funding goal was reached.
+   * @return Whether funding goal was reached
+   */
+  function goalReached() public view returns (bool) {
+    return USDRaised >= goal;
   }
 
   /**
@@ -244,6 +154,9 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
    */
   function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal whenNotPaused {
     super._preValidatePurchase(_beneficiary, _weiAmount);
+    // update current rate according to the USD/ETH rate
+    _setCurrentRate(_calculateCurrentRate());
+    require(USDRaised.add(_weiAmount.div(ethCent)) <= cap);
   }
 
   /**
@@ -253,16 +166,33 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
    * @param _tokenAmount Number of tokens to be purchased
    */
   function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
-
-    uint256 totalTokens = _tokenAmount;
-    uint256 bonusPercent = getCurrentBonus();
+    uint256 totalAmount = _tokenAmount;
+    uint256 bonusPercent = getCurrentBonusPercentage();
 
     if (bonusPercent > 0) {
-      uint256 bonusTokens = totalTokens.mul(bonusPercent).div(100); // tokens * bonus (%) / 100%
-      totalTokens = totalTokens.add(bonusTokens);
+      uint256 bonusAmount = totalAmount.mul(bonusPercent).div(100); // tokens * bonus (%) / 100%
+      totalAmount = totalAmount.add(bonusAmount);
     }
+    uint256 phaseNumber = getPhaseNumber();
+    require(remainingPublicSupplyPerPhase[phaseNumber] > totalAmount);
+    super._processPurchase(_beneficiary, totalAmount);
+    remainingPublicSupplyPerPhase[phaseNumber] = remainingPublicSupplyPerPhase[phaseNumber].sub(totalAmount);
+  }
 
-    super._processPurchase(_beneficiary, totalTokens);
+  /**
+   * @dev Update internal state to check for validity.
+   * Update USD raised
+   * @param _beneficiary Address receiving the tokens
+   * @param _weiAmount Value in wei involved in the purchase
+   */
+  function _updatePurchasingState(
+    address _beneficiary,
+    uint256 _weiAmount
+  )
+    internal
+  {
+    // update USD raised
+    USDRaised = USDRaised.add(_weiAmount.div(ethCent));
   }
 
   /**
@@ -271,8 +201,25 @@ contract CryptonityCrowdsale is CappedCrowdsale, TimedCrowdsale, WhitelistedCrow
   function withdrawTokens() public {
     require(goalReached());
     // solium-disable-next-line security/no-block-members
-    require(block.timestamp > deliveryTime);
+    require(now > deliveryTime);
     super.withdrawTokens();
+  }
+
+  /**
+   * @dev Finalization logic.
+   * Burn the remaining tokens.
+   */
+  function finalization() internal {
+    super.finalization();
+    uint totalRemainingPublicSupply = 0;
+    for (uint i = 0; i < remainingPublicSupplyPerPhase.length; i++) {
+      totalRemainingPublicSupply = totalRemainingPublicSupply.add(remainingPublicSupplyPerPhase[i]);
+    }
+    if (totalRemainingPublicSupply > 0) {
+      BurnableTokenInterface(address(token)).burn(totalRemainingPublicSupply);
+      delete remainingPublicSupplyPerPhase;
+    }
+    Ownable(address(token)).transferOwnership(owner);
   }
 
 }
