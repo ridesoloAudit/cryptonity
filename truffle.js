@@ -46,13 +46,13 @@ module.exports = {
         return new HDWalletProvider(process.env.MNENOMIC, `https://ropsten.infura.io/${process.env.INFURA_API_KEY}`);
       },
       network_id: '3',
-      gas: 6000000
+      gas: 4712388
     }
   },
-  solc: {
-    optimizer: {
-      enabled: true,
-      runs: 200
-    }
-  }
+  // solc: {
+  //   optimizer: {
+  //     enabled: true,
+  //     runs: 200
+  //   }
+  // }
 };

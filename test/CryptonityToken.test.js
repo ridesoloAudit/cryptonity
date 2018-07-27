@@ -4,16 +4,14 @@ const BigNumber = web3.BigNumber;
 const CryptonityToken = artifacts.require('CryptonityToken.sol');
 
 require('chai')
-.use(require('chai-as-promised'))
-.use(require('chai-bignumber')(BigNumber))
-.should();
+  .use(require('chai-as-promised'))
+  .use(require('chai-bignumber')(BigNumber))
+  .should();
 
-contract('CryptonityToken', function(accounts) {
-
+contract('CryptonityToken', function (accounts) {
   const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-
-  let  cryptonityToken;
+  let cryptonityToken;
   const _owner = accounts[0];
   const _receiver = accounts[1];
 
@@ -23,7 +21,6 @@ contract('CryptonityToken', function(accounts) {
 
   describe('total supply', function () {
     it('returns the total amount of tokens', async function () {
-
       const instance = await CryptonityToken.deployed();
       const totalSupply = await instance.totalSupply();
       const expectedTotalSupply = 10000000 * 10e+18;
@@ -76,5 +73,4 @@ contract('CryptonityToken', function(accounts) {
       });
     });
   }));
-
 });
